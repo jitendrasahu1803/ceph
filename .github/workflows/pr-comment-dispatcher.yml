@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 concurrency:
   group: pr-comment-poc-${{ github.event.issue.number }}
@@ -29,6 +30,7 @@ jobs:
           set -euo pipefail
           body='${{ github.event.comment.body }}'
           normalized=$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]' | xargs)
+
           if [[ "$normalized" == "jenkins test poc" ]]; then
             echo "trigger_poc=true" >> "$GITHUB_OUTPUT"
           else
@@ -42,10 +44,12 @@ jobs:
           set -euo pipefail
           user='${{ github.event.comment.user.login }}'
           repo='${{ github.repository }}'
+
           status=$(curl --retry 3 --retry-connrefused --fail -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$repo/collaborators/$user")
+
           if [[ "$status" == "204" ]]; then
             echo "authorized=true" >> "$GITHUB_OUTPUT"
           else
@@ -60,11 +64,14 @@ jobs:
           set -euo pipefail
           pr_number='${{ github.event.issue.number }}'
           pr_url='${{ github.event.issue.pull_request.url }}'
+
           pr_json=$(curl --retry 3 --retry-connrefused --fail -s \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "$pr_url")
+
           pr_sha=$(echo "$pr_json" | jq -r '.head.sha')
+
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "pr_sha=$pr_sha" >> "$GITHUB_OUTPUT"
 
