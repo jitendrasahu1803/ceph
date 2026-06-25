@@ -17,25 +17,14 @@ jobs:
           GH_TOKEN: ${{ secrets.POC_COMMENT_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
-
-          # Optional de-duplication: skip if the exact comment already exists
-          existing=$(curl -sS \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            | jq -r '.[].body')
-
-          if echo "$existing" | grep -Fxq "jenkins test poc"; then
-            echo "Trigger comment already exists. Skipping."
-            exit 0
-          fi
 
           curl --fail -L \
             -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d '{"body":"jenkins test poc"}'
+            -d "{\"body\":\"jenkins test poc [sha:$PR_SHA]\"}"
