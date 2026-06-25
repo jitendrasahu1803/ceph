@@ -27,4 +27,4 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d "{\"body\":\"jenkins test poc [sha:$PR_SHA]\"}"
+            -d "{\"body\":\"jenkins test poc\"}"
