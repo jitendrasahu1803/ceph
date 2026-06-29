@@ -2,110 +2,106 @@ name: Pull Request Job Dispatcher POC
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, labeled]
+    types: [opened, reopened, synchronize, closed]
 
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 concurrency:
-  group: pr-auto-poc-${{ github.event.pull_request.number }}
+  group: pr-job-dispatch-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  classify-pr:
-    if: contains(join(github.event.pull_request.labels.*.name, ','), 'ci-poc')
+  pr-info:
     runs-on: ubuntu-latest
+
     outputs:
       pr_number: ${{ steps.meta.outputs.pr_number }}
       pr_sha: ${{ steps.meta.outputs.pr_sha }}
-      only_docs: ${{ steps.classify.outputs.only_docs }}
-      only_container: ${{ steps.classify.outputs.only_container }}
+      action: ${{ steps.meta.outputs.action }}
+      skip_ci: ${{ steps.meta.outputs.skip_ci }}
+      is_ceph_member: ${{ steps.member.outputs.is_ceph_member }}
+
     steps:
       - name: Capture PR metadata
         id: meta
         shell: bash
         run: |
           set -euo pipefail
+
+          title='${{ github.event.pull_request.title }}'
+
           echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
           echo "pr_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          echo "action=${{ github.event.action }}" >> "$GITHUB_OUTPUT"
 
-      - name: List changed files via GitHub API
+          if echo "$title" | grep -qi '\[skip ci\]'; then
+            echo "skip_ci=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_ci=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if PR author is Ceph org member
+        id: member
         shell: bash
         run: |
           set -euo pipefail
-          repo='${{ github.repository }}'
-          pr='${{ github.event.pull_request.number }}'
-          curl --fail --retry 4 --retry-delay 3 --retry-connrefused -s \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+
+          author='${{ github.event.pull_request.user.login }}'
+
+          status=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CEPH_ORG_READ_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$repo/pulls/$pr/files?per_page=100" > files.json
-          jq -r '.[].filename' files.json > changed_files.txt
+            "https://api.github.com/orgs/ceph/members/$author")
 
-      - name: Classify docs-only / container-only
-        id: classify
+          if [[ "$status" == "204" ]]; then
+            echo "is_ceph_member=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_ceph_member=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show PR decision inputs
         shell: bash
         run: |
-          set -euo pipefail
-
-          is_docs_file() {
-            local f="$1"
-            [[ "$f" == doc/* ||
-               "$f" == admin/* ||
-               "$f" == src/sample.ceph.conf ||
-               "$f" == CodingStyle ||
-               "$f" == *.rst ||
-               "$f" == *.md ||
-               "$f" == COPYING* ||
-               "$f" == README.* ||
-               "$f" == SubmittingPatches ||
-               "$f" == .readthedocs.yml ||
-               "$f" == PendingReleaseNotes ]]
-          }
-
-          is_container_file() {
-            local f="$1"
-            [[ "$f" == container/* ||
-               "$f" == Dockerfile.build ||
-               "$f" == src/script/buildcontainer-setup.sh ||
-               "$f" == src/script/build-with-container.py ]]
-          }
-
-          only_docs=true
-          only_container=true
-
-          while IFS= read -r file; do
-            [[ -z "$file" ]] && continue
-            if ! is_docs_file "$file"; then
-              only_docs=false
-            fi
-            if ! is_container_file "$file"; then
-              only_container=false
-            fi
-          done < changed_files.txt
-
-          echo "only_docs=$only_docs" >> "$GITHUB_OUTPUT"
-          echo "only_container=$only_container" >> "$GITHUB_OUTPUT"
-
-  fake-statuses:
-    needs: classify-pr
-    if: needs.classify-pr.result == 'success' && (needs.classify-pr.outputs.only_docs == 'true' || needs.classify-pr.outputs.only_container == 'true')
-    uses: ./.github/workflows/pr-checks-faker.yml
-    secrets: inherit
-    with:
-      pr_sha: ${{ needs.classify-pr.outputs.pr_sha }}
-      triggered_by: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          echo "action=${{ steps.meta.outputs.action }}"
+          echo "skip_ci=${{ steps.meta.outputs.skip_ci }}"
+          echo "is_ceph_member=${{ steps.member.outputs.is_ceph_member }}"
 
   trigger-poc:
-    needs: classify-pr
-    if: needs.classify-pr.result == 'success' && needs.classify-pr.outputs.only_docs != 'true' && needs.classify-pr.outputs.only_container != 'true'
+    needs: pr-info
+    if: |
+      needs.pr-info.outputs.action != 'closed' &&
+      needs.pr-info.outputs.skip_ci != 'true' &&
+      needs.pr-info.outputs.is_ceph_member == 'true'
     uses: ./.github/workflows/dispatch-jenkins-job.yml
     secrets: inherit
     with:
-      pr_number: ${{ needs.classify-pr.outputs.pr_number }}
-      pr_sha: ${{ needs.classify-pr.outputs.pr_sha }}
+      pr_number: ${{ needs.pr-info.outputs.pr_number }}
+      pr_sha: ${{ needs.pr-info.outputs.pr_sha }}
       jenkins_job: preserve-ceph-pr-trigger-poc
       status_context: jenkins poc test
-      trigger_method: Branch push POC
+      trigger_method: PR ${{ needs.pr-info.outputs.action }}
       triggered_by: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
       dry_run: false
+      post_pending_status: true
+      cancel_only: false
+      cancel_mode: stale
+
+  abort-on-close:
+    needs: pr-info
+    if: needs.pr-info.outputs.action == 'closed'
+    uses: ./.github/workflows/dispatch-jenkins-job.yml
+    secrets: inherit
+    with:
+      pr_number: ${{ needs.pr-info.outputs.pr_number }}
+      pr_sha: ${{ needs.pr-info.outputs.pr_sha }}
+      jenkins_job: preserve-ceph-pr-trigger-poc
+      status_context: jenkins poc test
+      trigger_method: PR closed
+      triggered_by: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      dry_run: false
+      post_pending_status: false
+      cancel_only: true
+      cancel_mode: all
