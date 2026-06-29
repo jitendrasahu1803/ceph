@@ -24,19 +24,29 @@ on:
         required: true
         type: string
       triggered_by:
-        description: "URL of the workflow run or comment that triggered this dispatch"
+        description: "URL of workflow run or comment that triggered this dispatch"
         required: true
         type: string
       dry_run:
         description: "If true, do not stop/cancel/trigger Jenkins"
         required: false
-        default: true
+        default: false
         type: boolean
       post_pending_status:
         description: "If true, post pending status to GitHub"
         required: false
+        default: true
+        type: boolean
+      cancel_only:
+        description: "Only cancel Jenkins jobs; do not trigger a new build"
+        required: false
         default: false
         type: boolean
+      cancel_mode:
+        description: "stale cancels older SHA only; all cancels all running jobs for PR"
+        required: false
+        default: stale
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +60,7 @@ concurrency:
 jobs:
   dispatch:
     runs-on: ubuntu-latest
+
     env:
       JENKINS_BASE_URL: https://jenkins.ceph.com
       PR_NUMBER: ${{ inputs.pr_number }}
@@ -58,6 +69,7 @@ jobs:
       STATUS_CONTEXT: ${{ inputs.status_context }}
       TRIGGER_METHOD: ${{ inputs.trigger_method }}
       TRIGGERED_BY: ${{ inputs.triggered_by }}
+      CANCEL_MODE: ${{ inputs.cancel_mode }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       JENKINS_USER: ${{ secrets.JENKINS_USER }}
@@ -71,8 +83,23 @@ jobs:
           command -v curl >/dev/null 2>&1
           command -v jq >/dev/null 2>&1
 
+      - name: Show dispatch inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "PR_NUMBER=$PR_NUMBER"
+          echo "PR_SHA=$PR_SHA"
+          echo "JENKINS_JOB=$JENKINS_JOB"
+          echo "STATUS_CONTEXT=$STATUS_CONTEXT"
+          echo "TRIGGER_METHOD=$TRIGGER_METHOD"
+          echo "TRIGGERED_BY=$TRIGGERED_BY"
+          echo "DRY_RUN=${{ inputs.dry_run }}"
+          echo "POST_PENDING_STATUS=${{ inputs.post_pending_status }}"
+          echo "CANCEL_ONLY=${{ inputs.cancel_only }}"
+          echo "CANCEL_MODE=$CANCEL_MODE"
+
       - name: Post pending GitHub status
-        if: inputs.post_pending_status == true
+        if: inputs.post_pending_status == true && inputs.cancel_only != true
         shell: bash
         run: |
           set -euo pipefail
@@ -80,7 +107,7 @@ jobs:
           payload=$(jq -n \
             --arg state "pending" \
             --arg context "$STATUS_CONTEXT" \
-            --arg description "Jenkins POC job dispatched" \
+            --arg description "Jenkins job dispatched" \
             --arg target_url "$TRIGGERED_BY" \
             '{state: $state, context: $context, description: $description, target_url: $target_url}')
 
@@ -98,15 +125,15 @@ jobs:
           set -euo pipefail
           echo "DRY RUN ENABLED"
           echo "Would inspect Jenkins job: $JENKINS_JOB"
-          echo "Would stop stale running builds for PR #$PR_NUMBER not matching SHA $PR_SHA"
-          echo "Would cancel stale queued items for PR #$PR_NUMBER not matching SHA $PR_SHA"
-          echo "Would trigger Jenkins build for job '$JENKINS_JOB'"
+          echo "Would cancel mode: $CANCEL_MODE"
+          echo "Would trigger Jenkins: ${{ inputs.cancel_only != true }}"
 
-      - name: Abort stale running Jenkins builds for same PR/job
+      - name: Abort running Jenkins builds for same PR/job
         if: inputs.dry_run != true
         shell: bash
         run: |
           set -euo pipefail
+
           auth_args=(--user "$JENKINS_USER:$JENKINS_API_TOKEN")
 
           builds_json=$(curl -g --fail --silent --show-error --retry 4 --retry-delay 3 --retry-connrefused \
@@ -145,11 +172,24 @@ jobs:
             ')
 
             if [[ -z "$build_pr" || -z "$build_sha" ]]; then
+              echo "Build #$build_number has no GH_PULL_REQUEST_* parameters; skipping."
               continue
             fi
 
-            if [[ "$build_pr" == "$PR_NUMBER" && "$build_sha" != "$PR_SHA" ]]; then
-              echo "Stopping stale running build #$build_number for PR #$build_pr (old SHA: $build_sha)"
+            should_stop=false
+
+            if [[ "$CANCEL_MODE" == "all" ]]; then
+              if [[ "$build_pr" == "$PR_NUMBER" ]]; then
+                should_stop=true
+              fi
+            else
+              if [[ "$build_pr" == "$PR_NUMBER" && "$build_sha" != "$PR_SHA" ]]; then
+                should_stop=true
+              fi
+            fi
+
+            if [[ "$should_stop" == "true" ]]; then
+              echo "Stopping Jenkins build #$build_number for PR #$build_pr sha=$build_sha"
               curl --fail --silent --show-error --retry 3 --retry-delay 2 --retry-connrefused \
                 "${auth_args[@]}" \
                 -X POST \
@@ -157,11 +197,12 @@ jobs:
             fi
           done
 
-      - name: Cancel stale queued Jenkins items for same PR/job
+      - name: Cancel queued Jenkins items for same PR/job
         if: inputs.dry_run != true
         shell: bash
         run: |
           set -euo pipefail
+
           auth_args=(--user "$JENKINS_USER:$JENKINS_API_TOKEN")
 
           queue_json=$(curl --fail --silent --show-error --retry 4 --retry-delay 3 --retry-connrefused \
@@ -177,27 +218,41 @@ jobs:
               continue
             fi
 
-            if echo "$params_text" | grep -q "GH_PULL_REQUEST_ID=$PR_NUMBER"; then
+            if ! echo "$params_text" | grep -q "GH_PULL_REQUEST_ID=$PR_NUMBER"; then
+              continue
+            fi
+
+            should_cancel=false
+
+            if [[ "$CANCEL_MODE" == "all" ]]; then
+              should_cancel=true
+            else
               if ! echo "$params_text" | grep -q "GH_PULL_REQUEST_SHA=$PR_SHA"; then
-                echo "Cancelling stale queued item id=$queue_id for PR #$PR_NUMBER"
-                curl --fail --silent --show-error --retry 3 --retry-delay 2 --retry-connrefused \
-                  "${auth_args[@]}" \
-                  -X POST \
-                  "$JENKINS_BASE_URL/queue/cancelItem?id=$queue_id"
+                should_cancel=true
               fi
+            fi
+
+            if [[ "$should_cancel" == "true" ]]; then
+              echo "Cancelling queued item id=$queue_id for PR #$PR_NUMBER"
+              curl --fail --silent --show-error --retry 3 --retry-delay 2 --retry-connrefused \
+                "${auth_args[@]}" \
+                -X POST \
+                "$JENKINS_BASE_URL/queue/cancelItem?id=$queue_id"
             fi
           done
 
       - name: Trigger Jenkins build with retries
-        if: inputs.dry_run != true
+        if: inputs.dry_run != true && inputs.cancel_only != true
         shell: bash
         run: |
           set -euo pipefail
+
           auth_args=(--user "$JENKINS_USER:$JENKINS_API_TOKEN")
           success=false
 
           for attempt in 1 2 3 4 5; do
-            echo "Triggering Jenkins job '$JENKINS_JOB' (attempt $attempt)..."
+            echo "Triggering Jenkins job '$JENKINS_JOB' attempt $attempt..."
+
             if curl --fail --silent --show-error --retry 4 --retry-delay 5 --retry-connrefused \
               "${auth_args[@]}" \
               -X POST \
@@ -207,8 +262,11 @@ jobs:
               --data-urlencode "TRIGGER_METHOD=$TRIGGER_METHOD" \
               --data-urlencode "TRIGGERED_BY=$TRIGGERED_BY"; then
               success=true
+              echo "Jenkins job '$JENKINS_JOB' triggered successfully."
               break
             fi
+
+            echo "Attempt $attempt failed. Retrying in 5s..."
             sleep 5
           done
 

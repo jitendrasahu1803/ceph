@@ -18,20 +18,23 @@ permissions:
 jobs:
   send-status-checks:
     runs-on: ubuntu-latest
+
     env:
       REPO: ${{ github.repository }}
       SHA: ${{ inputs.pr_sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TRIGGERED_BY: ${{ inputs.triggered_by }}
+
     steps:
       - name: Post fake success status for POC
         shell: bash
         run: |
           set -euo pipefail
+
           payload=$(jq -n \
             --arg state "success" \
             --arg context "jenkins poc test" \
-            --arg description "Skipped: docs/container-only PR (POC)" \
+            --arg description "Skipped by POC fake status workflow" \
             --arg target_url "$TRIGGERED_BY" \
             '{state: $state, context: $context, description: $description, target_url: $target_url}')
 
