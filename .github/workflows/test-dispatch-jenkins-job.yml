@@ -1,3 +1,12 @@
+# Manual/debug workflow for testing dispatch-jenkins-job.yml.
+#
+# This workflow is not part of the production PR flow.
+# It is useful for:
+# - dry-run testing
+# - testing GitHub pending status
+# - manually triggering the Jenkins POC job
+# - validating stale-build abort logic
+
 name: Test Dispatch Jenkins Job POC
 
 on:

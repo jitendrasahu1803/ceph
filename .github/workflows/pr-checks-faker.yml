@@ -1,3 +1,15 @@
+# Optional fake-status workflow.
+#
+# This workflow can be used to post successful GitHub statuses without
+# triggering Jenkins.
+#
+# Intended use cases:
+# - docs-only PRs
+# - container-only PRs
+# - other PR types where Jenkins CI can be skipped safely
+#
+# Not required for the main Jenkins dispatch flow.
+
 name: PR Status Check Faker POC
 
 on:

@@ -1,3 +1,21 @@
+# Manual PR comment dispatcher.
+#
+# This workflow handles developer comments like:
+#   jenkins test poc
+#
+# Production version will map commands like:
+#   jenkins test make check
+#   jenkins test api
+#   jenkins test windows
+#   jenkins test all
+#
+# Behavior:
+# - Run only for comments on pull requests.
+# - Ignore unrelated comments.
+# - Verify commenter is authorized.
+# - Skip Jenkins trigger if PR title contains [skip ci].
+# - Call dispatch-jenkins-job.yml to handle Jenkins trigger and stale-build cleanup.
+
 name: PR Comment Dispatcher POC
 
 on:

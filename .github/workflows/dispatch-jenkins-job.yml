@@ -1,3 +1,18 @@
+# Reusable workflow responsible for all Jenkins interaction.
+#
+# This workflow is not triggered directly by PR events.
+# It is called by:
+# - pr-job-dispatcher.yml       -> automatic PR opened/synchronize/closed flow
+# - pr-comment-dispatcher.yml   -> manual "jenkins test X" comment flow
+# - test-dispatch-jenkins-job.yml -> optional manual/debug testing
+#
+# Main responsibilities:
+# - post GitHub "pending" commit status
+# - find and abort stale Jenkins builds for old PR SHAs
+# - cancel stale queued Jenkins items
+# - trigger Jenkins job with PR metadata
+# - support cancel-only mode when PR is closed
+
 name: Dispatch Jenkins Job
 
 on:

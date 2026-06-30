@@ -1,3 +1,22 @@
+# Automatic PR lifecycle dispatcher.
+#
+# This workflow handles:
+# - PR opened
+# - PR reopened
+# - PR synchronize / force-push / new commits
+# - PR closed cleanup
+#
+# Important security rule:
+# This workflow uses pull_request_target, so it must remain metadata-only.
+# Do not checkout PR code.
+# Do not execute files/scripts from the PR branch.
+# Only read PR metadata and call GitHub/Jenkins APIs.
+#
+# Behavior:
+# - Skip all Jenkins triggers if PR title contains [skip ci].
+# - Automatically trigger Jenkins only if PR author is allowed.
+# - On PR close, abort running Jenkins jobs for this PR without starting a new job.
+
 name: Pull Request Job Dispatcher POC
 
 on:
