@@ -1189,6 +1189,19 @@ def deploy_daemon(
                 )
             else:
                 raise RuntimeError('attempting to deploy a daemon without a container image')
+    else:
+        # On reconfig, update unit.meta so that port metadata
+        # stays current without requiring a full redeploy.
+        meta_path = os.path.join(data_dir, 'unit.meta')
+        ports = [e.port for e in endpoints] if endpoints else []
+        try:
+            update_meta_file(meta_path, {'ports': ports})
+        except FileNotFoundError:
+            logger.warning(f'unit.meta not found at {meta_path}, skipping port update')
+        except Exception as e:
+            logger.warning(
+                f'failed to update unit.meta at {meta_path}, skipping port update: {e}'
+            )
 
     if not os.path.exists(data_dir + '/unit.created'):
         with write_new(data_dir + '/unit.created', owner=(uid, gid)) as f:
@@ -1319,7 +1332,11 @@ def deploy_daemon_units(
         DaemonSubIdentity.must(sc.identity) for sc in sidecars or []
     ]
     systemd_unit.update_files(
-        ctx, ident, init_container_ids=ic_ids, sidecar_ids=sc_ids
+        ctx,
+        ident,
+        init_container_ids=ic_ids,
+        sidecar_ids=sc_ids,
+        success_exit_status=container.success_exit_status,
     )
     call_throws(ctx, ['systemctl', 'daemon-reload'])
 
